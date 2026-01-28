@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Jupyter
+*.ipynb_checkpoints
+
+# Logs / runtime
+logs/
+ble_python/logs/
+
+# OS
+.DS_Store
+
+# Conda / venv
+.env
+.venv
+FastRobots_ble/
