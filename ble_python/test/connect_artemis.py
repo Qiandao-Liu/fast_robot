@@ -17,12 +17,10 @@ async def main():
     async with BleakClient(d.address, timeout=TIMEOUT) as client:
         print("Connected:", client.is_connected)
 
-        # 兼容不同 bleak 版本：优先 get_services，否则用 client.services
         svcs = None
         if hasattr(client, "get_services"):
             svcs = await client.get_services()
         else:
-            # 某些版本需要先访问一次 services 触发枚举
             svcs = client.services
 
         if svcs is None:
