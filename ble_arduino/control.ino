@@ -35,6 +35,17 @@ void motorsTurnRight(int speed) {
     analogWrite(R_FWD, 0);
 }
 
+void motorsForwardSteered(int baseSpeed, int steerBias) {
+    int leftSpeed = constrain(baseSpeed + steerBias, 0, 255);
+    int rightBase = constrain(baseSpeed - steerBias, 0, 255);
+    int rightSpeed = constrain((int)(rightBase * motorCalFactor), 0, 255);
+
+    analogWrite(L_FWD, leftSpeed);
+    analogWrite(L_BWD, 0);
+    analogWrite(R_FWD, rightSpeed);
+    analogWrite(R_BWD, 0);
+}
+
 int16_t clamp_i16(float value) {
     if (value > 32767.0f) return 32767;
     if (value < -32768.0f) return -32768;
@@ -63,7 +74,174 @@ void reset_imu_filters() {
     imu_roll_a_raw = 0.0f;
     imu_last_gyr_z = 0.0f;
     imuSampleTimeMs = 0;
+    yawLastUpdateMs = 0;
     lastIMUTime = millis();
+}
+
+void reset_distance_pid_state(unsigned long now_ms) {
+    pid_I = 0.0f;
+    pid_dF = 0.0f;
+    pid_last_e = 0.0f;
+    pid_last_t = now_ms;
+    pid_safety_stop_latched = false;
+}
+
+void reset_orient_pid_state(unsigned long now_ms, bool clear_history) {
+    if (clear_history) {
+        orient_pos = 0;
+    }
+    orient_I = 0.0f;
+    orient_dF = 0.0f;
+    orient_last_e = 0.0f;
+    orient_last_pwm_sign = 0;
+    orient_kick_until_ms = 0;
+    orient_last_t = now_ms;
+}
+
+void apply_drive_pwm_signed(int pwm) {
+    if (pwm > 0) {
+        motorsForward(pwm);
+    } else if (pwm < 0) {
+        motorsBackward(-pwm);
+    } else {
+        motorsStop();
+    }
+}
+
+void update_kf_control_input(int pwm) {
+    float norm_base = (float)max(1, abs(kf_step_pwm_val));
+    kf_last_u = (pwm != 0) ? -(float)pwm / norm_base : 0.0f;
+}
+
+bool update_yaw_estimate() {
+    if (!update_imu_state()) return false;
+
+    if (yawLastUpdateMs != 0 && imuSampleTimeMs > yawLastUpdateMs) {
+        float dt = (float)(imuSampleTimeMs - yawLastUpdateMs) / 1000.0f;
+        if (dt > 0.0002f) {
+            yaw_g = wrap_angle_deg(yaw_g - imu_last_gyr_z * dt);
+        }
+    }
+
+    yawLastUpdateMs = imuSampleTimeMs;
+    return true;
+}
+
+bool step_distance_pid(float dist_mm, unsigned long now_ms, float &error_mm, int &pwm) {
+    int dt = (int)(now_ms - pid_last_t);
+    if (dt < 1) return false;
+    pid_last_t = now_ms;
+
+    error_mm = dist_mm - (float)pid_setpoint;
+    pid_I += error_mm * (float)dt / 1000.0f;
+    if (pid_I > 1000.0f) pid_I = 1000.0f;
+    if (pid_I < -1000.0f) pid_I = -1000.0f;
+
+    float d_raw = (error_mm - pid_last_e) / ((float)dt / 1000.0f);
+    pid_dF = 0.9f * pid_dF + 0.1f * d_raw;
+    pid_last_e = error_mm;
+
+    float output = pid_kp * error_mm + pid_ki * pid_I + pid_kd * pid_dF;
+    output = constrain(output, -(float)PWM_MAX, (float)PWM_MAX);
+
+    pwm = 0;
+    if (fabsf(output) <= 2.0f) {
+        return true;
+    }
+
+    float abs_out = fabsf(output);
+    float mapped = DEADBAND_MIN + (abs_out / (float)PWM_MAX) * (float)(PWM_MAX - DEADBAND_MIN);
+    mapped = constrain(mapped, (float)DEADBAND_MIN, (float)PWM_MAX);
+    pwm = (int)mapped;
+
+    if (output > 0.0f && !pid_safety_stop_latched) {
+        return true;
+    }
+
+    if (output <= 0.0f) {
+        pwm = -pwm;
+        return true;
+    }
+
+    pwm = 0;
+    return true;
+}
+
+bool step_orient_pid(float &error_deg, int &pwm, unsigned long &now_ms, bool log_history) {
+    if (!update_yaw_estimate()) return false;
+
+    now_ms = imuSampleTimeMs;
+    float dt = (float)(now_ms - orient_last_t) / 1000.0f;
+    if (dt <= 0.0005f) return false;
+    orient_last_t = now_ms;
+
+    error_deg = wrap_angle_deg(orient_target_deg - yaw_g);
+
+    orient_I += error_deg * dt;
+    if (orient_I > 100.0f) orient_I = 100.0f;
+    if (orient_I < -100.0f) orient_I = -100.0f;
+
+    float d_raw = (error_deg - orient_last_e) / dt;
+    orient_dF = 0.9f * orient_dF + 0.1f * d_raw;
+    orient_last_e = error_deg;
+
+    float output = orient_kp * error_deg + orient_ki * orient_I + orient_kd * orient_dF;
+    output = constrain(output, -(float)TURN_PWM_MAX, (float)TURN_PWM_MAX);
+
+    pwm = 0;
+    int desired_sign = 0;
+    float abs_out = fabsf(output);
+
+    if (abs_out < 2.0f) {
+        motorsStop();
+        orient_last_pwm_sign = 0;
+    } else {
+        desired_sign = (output > 0.0f) ? 1 : -1;
+        float mapped = TURN_DEADBAND + (abs_out - 2.0f) * (TURN_PWM_MAX - TURN_DEADBAND)
+                       / (TURN_PWM_MAX - 2.0f);
+        pwm = (int)constrain(mapped, (float)TURN_DEADBAND, (float)TURN_PWM_MAX);
+
+        if ((orient_last_pwm_sign == 0 || desired_sign != orient_last_pwm_sign) &&
+            now_ms >= orient_kick_until_ms) {
+            orient_kick_until_ms = now_ms + TURN_KICK_MS;
+        }
+
+        if (now_ms < orient_kick_until_ms) {
+            pwm = TURN_KICK_PWM;
+        }
+
+        if (desired_sign > 0) {
+            motorsTurnRight(pwm);
+        } else {
+            motorsTurnLeft(pwm);
+            pwm = -pwm;
+        }
+        orient_last_pwm_sign = desired_sign;
+    }
+
+    if (log_history && orient_pos < ORIENT_LENGTH) {
+        orient_yaw_hist[orient_pos] = (int16_t)lroundf(yaw_g * 10.0f);
+        orient_e_hist[orient_pos] = (int16_t)lroundf(error_deg * 10.0f);
+        orient_motor_hist[orient_pos] = (int16_t)pwm;
+        orient_t_hist[orient_pos] = now_ms;
+        orient_pos++;
+    }
+
+    return true;
+}
+
+void append_drift_log(int raw_mm, float est_mm, int motor_cmd, int phase,
+                      float heading_err_deg, float gyro_dps, unsigned long ts_ms) {
+    if (drift_log_pos >= DRIFT_LOG_LEN) return;
+    drift_raw_hist[drift_log_pos] = clamp_i16((float)raw_mm);
+    drift_est_hist[drift_log_pos] = clamp_i16(est_mm);
+    drift_yaw_hist[drift_log_pos] = clamp_i16(yaw_g * 10.0f);
+    drift_mot_hist[drift_log_pos] = clamp_i16((float)motor_cmd);
+    drift_heading_err_hist[drift_log_pos] = clamp_i16(heading_err_deg * 10.0f);
+    drift_gyro_hist[drift_log_pos] = clamp_i16(gyro_dps * 10.0f);
+    drift_phase_hist[drift_log_pos] = (uint8_t)phase;
+    drift_t_hist[drift_log_pos] = ts_ms;
+    drift_log_pos++;
 }
 
 void reset_kf_debug_log() {
@@ -129,9 +307,6 @@ void start_pid_run(bool use_kf) {
     pid_e_pos = 0;
     range_trace_pos = 0;
     reset_kf_debug_log();
-    pid_I = 0.0f;
-    pid_dF = 0.0f;
-    pid_last_e = 0.0f;
     tof_extrap_valid = false;
     tof_current = -1.0f;
     tof_slope = 0.0f;
@@ -140,7 +315,7 @@ void start_pid_run(bool use_kf) {
     kf_initialized = false;
     kf_last_u = 0.0f;
     pid_start_ms = millis();
-    pid_last_t = pid_start_ms;
+    reset_distance_pid_state(pid_start_ms);
     runMode = use_kf ? RUN_PID_KF : RUN_PID_LINEAR;
 }
 
@@ -148,15 +323,9 @@ void start_orient_run() {
     stop_active_drive_run(STOP_MODE_SWITCH, true);
     collectingTOF = false;
     collectingIMU = false;
-    orient_pos = 0;
-    orient_I = 0.0f;
-    orient_dF = 0.0f;
-    orient_last_e = 0.0f;
-    orient_last_pwm_sign = 0;
-    orient_kick_until_ms = 0;
     reset_imu_filters();
     orient_start_ms = millis();
-    orient_last_t = orient_start_ms;
+    reset_orient_pid_state(orient_start_ms, true);
     runMode = RUN_ORIENT;
 }
 
@@ -413,46 +582,14 @@ void handle_pid() {
     }
 
     now = millis();
-    int dt = (int)(now - pid_last_t);
-    if (dt < 1) return;
-    pid_last_t = now;
-
-    float e = tof_current - (float)pid_setpoint;
-    pid_I += e * (float)dt / 1000.0f;
-    if (pid_I > 1000.0f) pid_I = 1000.0f;
-    if (pid_I < -1000.0f) pid_I = -1000.0f;
-
-    float d_raw = (e - pid_last_e) / ((float)dt / 1000.0f);
-    pid_dF = 0.9f * pid_dF + 0.1f * d_raw;
-    pid_last_e = e;
-
-    float output = pid_kp * e + pid_ki * pid_I + pid_kd * pid_dF;
-    output = constrain(output, -(float)PWM_MAX, (float)PWM_MAX);
-
+    float e = 0.0f;
     int pwm = 0;
-    if (fabsf(output) > 2.0f) {
-        float abs_out = fabsf(output);
-        float mapped = DEADBAND_MIN + (abs_out / (float)PWM_MAX) * (float)(PWM_MAX - DEADBAND_MIN);
-        mapped = constrain(mapped, (float)DEADBAND_MIN, (float)PWM_MAX);
-        pwm = (int)mapped;
+    if (!step_distance_pid(tof_current, now, e, pwm)) return;
 
-        if (output > 0.0f && !pid_safety_stop_latched) {
-            motorsForward(pwm);
-        } else if (output <= 0.0f) {
-            motorsBackward(pwm);
-            pwm = -pwm;
-        } else {
-            motorsStop();
-            pwm = 0;
-        }
-    } else {
-        motorsStop();
-        pwm = 0;
-    }
+    apply_drive_pwm_signed(pwm);
 
     if (pidUsesKalman()) {
-        float norm_base = (float)max(1, abs(kf_step_pwm_val));
-        kf_last_u = (pwm != 0) ? -(float)pwm / norm_base : 0.0f;
+        update_kf_control_input(pwm);
     }
 
     if (pid_e_pos < PID_LENGTH) {
@@ -475,71 +612,37 @@ void handle_pid() {
 
 void handle_orient_pid() {
     if (runMode != RUN_ORIENT) return;
-    if (!update_imu_state()) return;
-
-    unsigned long now = imuSampleTimeMs;
+    unsigned long now = millis();
     if (now - orient_start_ms >= orient_timeout_ms) {
         stop_active_drive_run(STOP_TIMEOUT, true);
         Serial.println("Orientation PID timeout");
         return;
     }
 
-    float dt = (float)(now - orient_last_t) / 1000.0f;
-    if (dt <= 0.0005f) return;
-    orient_last_t = now;
-
-    yaw_g = wrap_angle_deg(yaw_g - imu_last_gyr_z * dt);
-    float e = wrap_angle_deg(orient_target_deg - yaw_g);
-
-    orient_I += e * dt;
-    if (orient_I > 100.0f) orient_I = 100.0f;
-    if (orient_I < -100.0f) orient_I = -100.0f;
-
-    float d_raw = (e - orient_last_e) / dt;
-    orient_dF = 0.9f * orient_dF + 0.1f * d_raw;
-    orient_last_e = e;
-
-    float output = orient_kp * e + orient_ki * orient_I + orient_kd * orient_dF;
-    output = constrain(output, -(float)TURN_PWM_MAX, (float)TURN_PWM_MAX);
-
+    float e = 0.0f;
     int pwm = 0;
-    int desired_sign = 0;
-    float abs_out = fabsf(output);
+    step_orient_pid(e, pwm, now, true);
+}
 
-    if (abs_out < 2.0f) {
-        motorsStop();
-        orient_last_pwm_sign = 0;
-    } else {
-        desired_sign = (output > 0.0f) ? 1 : -1;
-        float mapped = TURN_DEADBAND + (abs_out - 2.0f) * (TURN_PWM_MAX - TURN_DEADBAND)
-                       / (TURN_PWM_MAX - 2.0f);
-        pwm = (int)constrain(mapped, (float)TURN_DEADBAND, (float)TURN_PWM_MAX);
+bool drift_update_distance_estimate(unsigned long now_ms, float &est_dist, int &raw_mm) {
+    float raw_dist = 0.0f;
+    unsigned long t_new = 0;
+    bool got_tof = read_front_tof_sample(raw_dist, t_new);
+    raw_mm = got_tof ? (int)raw_dist : -1;
 
-        if ((orient_last_pwm_sign == 0 || desired_sign != orient_last_pwm_sign) &&
-            now >= orient_kick_until_ms) {
-            orient_kick_until_ms = now + TURN_KICK_MS;
-        }
-
-        if (now < orient_kick_until_ms) {
-            pwm = TURN_KICK_PWM;
-        }
-
-        if (desired_sign > 0) {
-            motorsTurnRight(pwm);
-        } else {
-            motorsTurnLeft(pwm);
-            pwm = -pwm;
-        }
-        orient_last_pwm_sign = desired_sign;
+    if (!kf_initialized) {
+        if (!got_tof) return false;
+        kf_init(raw_dist);
+        kf_prev_t_ms = now_ms;
+        est_dist = raw_dist;
+        return true;
     }
 
-    if (orient_pos < ORIENT_LENGTH) {
-        orient_yaw_hist[orient_pos] = (int16_t)lroundf(yaw_g * 10.0f);
-        orient_e_hist[orient_pos] = (int16_t)lroundf(e * 10.0f);
-        orient_motor_hist[orient_pos] = (int16_t)pwm;
-        orient_t_hist[orient_pos] = now;
-        orient_pos++;
-    }
+    float dt_s = (float)(now_ms - kf_prev_t_ms) / 1000.0f;
+    if (dt_s < 0.0001f) dt_s = 0.001f;
+    kf_prev_t_ms = now_ms;
+    est_dist = kf_step_fn(dt_s, kf_last_u, got_tof, raw_dist);
+    return true;
 }
 
 void start_drift_run() {
@@ -548,24 +651,21 @@ void start_drift_run() {
     collectingIMU = false;
     drift_log_pos = 0;
     drift_phase = 0;
-    drift_yaw_start = 0.0f;
-    // Reset KF
+    drift_approach_heading_ref = 0.0f;
     kf_initialized = false;
     kf_last_u = 0.0f;
     kf_step_pwm_val = drift_approach_pwm;
-    // Reset yaw
+    pid_setpoint = (int)lroundf(drift_stop_dist);
     reset_imu_filters();
-    // Reset orient PID state (reuse globals for rotation phase)
-    orient_I = 0.0f;
-    orient_dF = 0.0f;
-    orient_last_e = 0.0f;
-    orient_last_pwm_sign = 0;
-    orient_kick_until_ms = 0;
-    drift_brake_start_ms  = 0;
+    unsigned long now_ms = millis();
+    reset_distance_pid_state(now_ms);
+    reset_orient_pid_state(now_ms, false);
+    drift_stop_hold_start_ms = 0;
+    drift_rotate_done_start_ms = 0;
     drift_return_start_ms = 0;
     memset(drift_e_window, 0, sizeof(drift_e_window));
     drift_e_win_idx = 0;
-    drift_start_ms = millis();
+    drift_start_ms = now_ms;
     runMode = RUN_DRIFT;
 }
 
@@ -585,6 +685,10 @@ void stream_drift_history() {
         tx_estring_value.append((int)drift_mot_hist[i]);
         tx_estring_value.append("|");
         tx_estring_value.append((int)drift_phase_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)drift_heading_err_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)drift_gyro_hist[i]);
         tx_estring_value.append("|");
         tx_estring_value.append((int)drift_t_hist[i]);
         ble_write_reliable(tx_estring_value.c_str());
@@ -609,172 +713,118 @@ void handle_drift() {
         return;
     }
 
-    // ── Phase 0: Approach ────────────────────────────────────────
     if (drift_phase == 0) {
-        update_imu_state();
-
-        float new_dist = 0.0f;
-        unsigned long t_new = 0;
-        bool got_tof = read_front_tof_sample(new_dist, t_new);
-
-        if (!kf_initialized) {
-            motorsForward(drift_approach_pwm);
-            if (!got_tof) return;
-            kf_init(new_dist);
-            kf_prev_t_ms = now;
-        }
-
-        float dt_s = (float)(now - kf_prev_t_ms) / 1000.0f;
-        if (dt_s < 0.0001f) dt_s = 0.001f;
-        kf_prev_t_ms = now;
-        float est_dist = kf_step_fn(dt_s, kf_last_u, got_tof, new_dist);
-
         motorsForward(drift_approach_pwm);
-        kf_last_u = -(float)drift_approach_pwm / (float)max(1, kf_step_pwm_val);
+        update_yaw_estimate();
 
-        if (drift_log_pos < DRIFT_LOG_LEN) {
-            drift_raw_hist[drift_log_pos]   = got_tof ? (int16_t)new_dist : -1;
-            drift_est_hist[drift_log_pos]   = (int16_t)est_dist;
-            drift_yaw_hist[drift_log_pos]   = (int16_t)lroundf(yaw_g * 10.0f);
-            drift_mot_hist[drift_log_pos]   = (int16_t)drift_approach_pwm;
-            drift_phase_hist[drift_log_pos] = 0;
-            drift_t_hist[drift_log_pos]     = now;
-            drift_log_pos++;
-        }
+        float est_dist = 0.0f;
+        int raw_mm = -1;
+        if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
 
-        if (est_dist <= drift_brake_dist) {
-            // Lock exact 180° target from current heading BEFORE braking starts
-            drift_yaw_start   = yaw_g;
-            orient_target_deg = wrap_angle_deg(yaw_g + 180.0f);
-            drift_brake_start_ms = now;
+        update_kf_control_input(drift_approach_pwm);
+        append_drift_log(raw_mm, est_dist, drift_approach_pwm, 0, 0.0f, imu_last_gyr_z, now);
+
+        if (est_dist <= drift_trigger_dist) {
+            drift_approach_heading_ref = yaw_g;
+            orient_target_deg = wrap_angle_deg(drift_approach_heading_ref + 180.0f);
+            reset_distance_pid_state(now);
+            drift_stop_hold_start_ms = 0;
             drift_phase = 1;
         }
         return;
     }
 
-    // ── Phase 1: Brake ───────────────────────────────────────────
     if (drift_phase == 1) {
-        motorsBackward(drift_brake_pwm);
-        update_imu_state();
+        update_yaw_estimate();
 
-        if (drift_log_pos < DRIFT_LOG_LEN) {
-            drift_raw_hist[drift_log_pos]   = -1;
-            drift_est_hist[drift_log_pos]   = (int16_t)kf_mu(0, 0);
-            drift_yaw_hist[drift_log_pos]   = (int16_t)lroundf(yaw_g * 10.0f);
-            drift_mot_hist[drift_log_pos]   = -(int16_t)drift_brake_pwm;
-            drift_phase_hist[drift_log_pos] = 1;
-            drift_t_hist[drift_log_pos]     = now;
-            drift_log_pos++;
+        float est_dist = 0.0f;
+        int raw_mm = -1;
+        if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
+
+        float e = 0.0f;
+        int pwm = 0;
+        if (!step_distance_pid(est_dist, now, e, pwm)) return;
+
+        apply_drive_pwm_signed(pwm);
+        update_kf_control_input(pwm);
+
+        float heading_err = wrap_angle_deg(orient_target_deg - yaw_g);
+        float est_vel = kf_initialized ? kf_mu(1, 0) : 0.0f;
+        append_drift_log(raw_mm, est_dist, pwm, 1, heading_err, imu_last_gyr_z, now);
+
+        bool stopped = fabsf(e) < DRIFT_STOP_ERR_MM && fabsf(est_vel) < DRIFT_STOP_VEL_MMPS;
+        if (stopped) {
+            if (drift_stop_hold_start_ms == 0) {
+                drift_stop_hold_start_ms = now;
+            }
+        } else {
+            drift_stop_hold_start_ms = 0;
         }
 
-        if (now - drift_brake_start_ms >= drift_brake_ms) {
+        if (drift_stop_hold_start_ms != 0 &&
+            now - drift_stop_hold_start_ms >= DRIFT_STOP_HOLD_MS) {
             motorsStop();
-            // Reset orient PID state cleanly before rotation begins
-            orient_I = 0.0f;
-            orient_dF = 0.0f;
-            orient_last_e = 0.0f;
-            orient_last_pwm_sign = 0;
-            orient_kick_until_ms = 0;
-            orient_last_t = imuSampleTimeMs;
             kf_last_u = 0.0f;
+            reset_orient_pid_state(imuSampleTimeMs > 0 ? imuSampleTimeMs : now, false);
+            drift_rotate_done_start_ms = 0;
+            memset(drift_e_window, 0, sizeof(drift_e_window));
+            drift_e_win_idx = 0;
             drift_phase = 2;
         }
         return;
     }
 
-    // ── Phase 2: Rotate 180° ─────────────────────────────────────
     if (drift_phase == 2) {
-        if (!update_imu_state()) return;
-
-        unsigned long imu_now = imuSampleTimeMs;
-        float dt = (float)(imu_now - orient_last_t) / 1000.0f;
-        if (dt <= 0.0005f) return;
-        orient_last_t = imu_now;
-
-        yaw_g = wrap_angle_deg(yaw_g - imu_last_gyr_z * dt);
-        float e = wrap_angle_deg(orient_target_deg - yaw_g);
-
-        orient_I += e * dt;
-        if (orient_I >  100.0f) orient_I =  100.0f;
-        if (orient_I < -100.0f) orient_I = -100.0f;
-
-        float d_raw = (e - orient_last_e) / dt;
-        orient_dF = 0.9f * orient_dF + 0.1f * d_raw;
-        orient_last_e = e;
-
-        float output = orient_kp * e + orient_ki * orient_I + orient_kd * orient_dF;
-        output = constrain(output, -(float)TURN_PWM_MAX, (float)TURN_PWM_MAX);
-
         int pwm = 0;
-        float abs_out = fabsf(output);
-        if (abs_out >= 2.0f) {
-            int desired_sign = (output > 0.0f) ? 1 : -1;
-            float mapped = TURN_DEADBAND + (abs_out - 2.0f) * (float)(TURN_PWM_MAX - TURN_DEADBAND)
-                           / (float)(TURN_PWM_MAX - 2);
-            pwm = (int)constrain(mapped, (float)TURN_DEADBAND, (float)TURN_PWM_MAX);
-            if ((orient_last_pwm_sign == 0 || desired_sign != orient_last_pwm_sign) &&
-                imu_now >= orient_kick_until_ms) {
-                orient_kick_until_ms = imu_now + TURN_KICK_MS;
-            }
-            if (imu_now < orient_kick_until_ms) pwm = TURN_KICK_PWM;
-            if (desired_sign > 0) {
-                motorsTurnRight(pwm);
-            } else {
-                motorsTurnLeft(pwm);
-                pwm = -pwm;
-            }
-            orient_last_pwm_sign = desired_sign;
-        } else {
-            motorsStop();
-            orient_last_pwm_sign = 0;
-        }
+        float e = 0.0f;
+        unsigned long imu_now = 0;
+        if (!step_orient_pid(e, pwm, imu_now, false)) return;
 
-        if (drift_log_pos < DRIFT_LOG_LEN) {
-            drift_raw_hist[drift_log_pos]   = -1;
-            drift_est_hist[drift_log_pos]   = (int16_t)kf_mu(0, 0);
-            drift_yaw_hist[drift_log_pos]   = (int16_t)lroundf(yaw_g * 10.0f);
-            drift_mot_hist[drift_log_pos]   = (int16_t)pwm;
-            drift_phase_hist[drift_log_pos] = 2;
-            drift_t_hist[drift_log_pos]     = now;
-            drift_log_pos++;
-        }
+        append_drift_log(-1, kf_initialized ? kf_mu(0, 0) : -1.0f,
+                         pwm, 2, e, imu_last_gyr_z, imu_now);
 
-        // Rolling window exit: require last DRIFT_WIN_SIZE samples all < DRIFT_DONE_EACH
-        // AND their mean < DRIFT_DONE_AVG — prevents premature exit during oscillation
-        drift_e_window[drift_e_win_idx % DRIFT_WIN_SIZE] = e;
+        drift_e_window[drift_e_win_idx % DRIFT_WIN_SIZE] = fabsf(e);
         drift_e_win_idx++;
 
+        float turn_progress = 180.0f - fabsf(e);
         if (drift_e_win_idx >= DRIFT_WIN_SIZE) {
             float sum = 0.0f;
             bool all_close = true;
             for (int i = 0; i < DRIFT_WIN_SIZE; i++) {
-                float ae = fabsf(drift_e_window[i]);
+                float ae = drift_e_window[i];
                 sum += ae;
                 if (ae >= DRIFT_DONE_EACH) all_close = false;
             }
-            if (all_close && (sum / DRIFT_WIN_SIZE) < DRIFT_DONE_AVG) {
-                motorsStop();
-                drift_return_start_ms = now;
-                drift_phase = 3;
+
+            bool rotate_stable = turn_progress >= DRIFT_TURN_PROGRESS_MIN &&
+                                 all_close &&
+                                 (sum / DRIFT_WIN_SIZE) < DRIFT_DONE_AVG &&
+                                 fabsf(imu_last_gyr_z) < DRIFT_ROTATE_GYRO_DONE_DPS;
+
+            if (rotate_stable) {
+                if (drift_rotate_done_start_ms == 0) {
+                    drift_rotate_done_start_ms = imu_now;
+                } else if (imu_now - drift_rotate_done_start_ms >= DRIFT_ROTATE_HOLD_MS) {
+                    motorsStop();
+                    drift_return_start_ms = now;
+                    drift_phase = 3;
+                }
+            } else {
+                drift_rotate_done_start_ms = 0;
             }
         }
         return;
     }
 
-    // ── Phase 3: Return ──────────────────────────────────────────
     if (drift_phase == 3) {
-        motorsForward(drift_return_pwm);
-        update_imu_state();
+        update_yaw_estimate();
 
-        if (drift_log_pos < DRIFT_LOG_LEN) {
-            drift_raw_hist[drift_log_pos]   = -1;
-            drift_est_hist[drift_log_pos]   = -1;
-            drift_yaw_hist[drift_log_pos]   = (int16_t)lroundf(yaw_g * 10.0f);
-            drift_mot_hist[drift_log_pos]   = (int16_t)drift_return_pwm;
-            drift_phase_hist[drift_log_pos] = 3;
-            drift_t_hist[drift_log_pos]     = now;
-            drift_log_pos++;
-        }
+        float heading_err = wrap_angle_deg(orient_target_deg - yaw_g);
+        int steer_bias = (int)lroundf(drift_return_yaw_kp * heading_err);
+        steer_bias = constrain(steer_bias, -DRIFT_RETURN_STEER_MAX, DRIFT_RETURN_STEER_MAX);
+        motorsForwardSteered(drift_return_pwm, steer_bias);
+
+        append_drift_log(-1, -1.0f, steer_bias, 3, heading_err, imu_last_gyr_z, now);
 
         if (now - drift_return_start_ms >= drift_return_ms) {
             motorsStop();

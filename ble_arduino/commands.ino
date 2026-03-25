@@ -544,31 +544,32 @@ void handle_command() {
 
         case DRIFT_START:
         {
-            // params: approach_pwm|return_pwm|brake_dist|brake_pwm|brake_ms|return_ms|timeout_ms
-            int ap = 200, rp = 200, bpwm = 200, bms = 250, ret_ms = 2000, tout = 8000;
-            float bdist = 500.0f;
+            // params: approach_pwm|return_pwm|trigger_dist|stop_dist|return_ms|timeout_ms|return_yaw_kp
+            int ap = 200, rp = 200, ret_ms = 2000, tout = 8000;
+            float trigger_dist = 914.0f, stop_dist = 700.0f, return_kp = 1.0f;
             robot_cmd.get_next_value(ap);
             robot_cmd.get_next_value(rp);
-            robot_cmd.get_next_value(bdist);
-            robot_cmd.get_next_value(bpwm);
-            robot_cmd.get_next_value(bms);
+            robot_cmd.get_next_value(trigger_dist);
+            robot_cmd.get_next_value(stop_dist);
             robot_cmd.get_next_value(ret_ms);
             robot_cmd.get_next_value(tout);
+            robot_cmd.get_next_value(return_kp);
             drift_approach_pwm = constrain(ap, 0, 255);
             drift_return_pwm   = constrain(rp, 0, 255);
-            drift_brake_dist   = bdist;
-            drift_brake_pwm    = constrain(bpwm, 0, 255);
-            drift_brake_ms     = (unsigned long)max(0, bms);
+            drift_trigger_dist = trigger_dist;
+            drift_stop_dist    = stop_dist;
+            pid_setpoint       = (int)lroundf(stop_dist);
             drift_return_ms    = (unsigned long)max(0, ret_ms);
             drift_timeout_ms   = (unsigned long)max(1000, tout);
+            drift_return_yaw_kp = return_kp;
             start_drift_run();
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "DRIFT_START|ap=%d|rp=%d|bdist=%.0f|bpwm=%d|bms=%lu|ret=%lu|tout=%lu",
+                     "DRIFT_START|ap=%d|rp=%d|trigger=%.0f|stop=%.0f|ret=%lu|tout=%lu|ryk=%.2f",
                      drift_approach_pwm, drift_return_pwm,
-                     drift_brake_dist, drift_brake_pwm, drift_brake_ms,
-                     drift_return_ms, drift_timeout_ms);
+                     drift_trigger_dist, drift_stop_dist,
+                     drift_return_ms, drift_timeout_ms, drift_return_yaw_kp);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }
@@ -584,30 +585,31 @@ void handle_command() {
 
         case SET_DRIFT_PARAMS:
         {
-            // params: approach_pwm|return_pwm|brake_dist|brake_pwm|brake_ms|return_ms|timeout_ms
-            int ap = 200, rp = 200, bpwm = 200, bms = 250, ret_ms = 2000, tout = 8000;
-            float bdist = 500.0f;
+            // params: approach_pwm|return_pwm|trigger_dist|stop_dist|return_ms|timeout_ms|return_yaw_kp
+            int ap = 200, rp = 200, ret_ms = 2000, tout = 8000;
+            float trigger_dist = 914.0f, stop_dist = 700.0f, return_kp = 1.0f;
             robot_cmd.get_next_value(ap);
             robot_cmd.get_next_value(rp);
-            robot_cmd.get_next_value(bdist);
-            robot_cmd.get_next_value(bpwm);
-            robot_cmd.get_next_value(bms);
+            robot_cmd.get_next_value(trigger_dist);
+            robot_cmd.get_next_value(stop_dist);
             robot_cmd.get_next_value(ret_ms);
             robot_cmd.get_next_value(tout);
+            robot_cmd.get_next_value(return_kp);
             drift_approach_pwm = constrain(ap, 0, 255);
             drift_return_pwm   = constrain(rp, 0, 255);
-            drift_brake_dist   = bdist;
-            drift_brake_pwm    = constrain(bpwm, 0, 255);
-            drift_brake_ms     = (unsigned long)max(0, bms);
+            drift_trigger_dist = trigger_dist;
+            drift_stop_dist    = stop_dist;
+            pid_setpoint       = (int)lroundf(stop_dist);
             drift_return_ms    = (unsigned long)max(0, ret_ms);
             drift_timeout_ms   = (unsigned long)max(1000, tout);
+            drift_return_yaw_kp = return_kp;
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "DRIFT_PARAMS|ap=%d|rp=%d|bdist=%.0f|bpwm=%d|bms=%lu|ret=%lu|tout=%lu",
+                     "DRIFT_PARAMS|ap=%d|rp=%d|trigger=%.0f|stop=%.0f|ret=%lu|tout=%lu|ryk=%.2f",
                      drift_approach_pwm, drift_return_pwm,
-                     drift_brake_dist, drift_brake_pwm, drift_brake_ms,
-                     drift_return_ms, drift_timeout_ms);
+                     drift_trigger_dist, drift_stop_dist,
+                     drift_return_ms, drift_timeout_ms, drift_return_yaw_kp);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }

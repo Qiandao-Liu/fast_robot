@@ -78,6 +78,7 @@ float imu_roll_a_raw = 0.0f;
 float imu_last_gyr_z = 0.0f;
 unsigned long imuSampleTimeMs = 0;
 unsigned long lastIMUTime = 0;
+unsigned long yawLastUpdateMs = 0;
 
 unsigned long imuTimeStamps[MAX_IMU_SIZE];
 float imuPitchA[MAX_IMU_SIZE];
@@ -147,30 +148,40 @@ bool pid_safety_stop_latched = false;
 
 //////////// Drift Stunt Setup (Lab 8) ////////////
 #define DRIFT_LOG_LEN  800
-#define DRIFT_WIN_SIZE 10      // rolling window size for rotation completion check
-#define DRIFT_DONE_AVG  2.0f   // window mean |error| threshold (deg) — stable
-#define DRIFT_DONE_EACH 10.0f  // per-sample max |error| threshold (deg)
+#define DRIFT_WIN_SIZE 12
+#define DRIFT_DONE_AVG  4.0f
+#define DRIFT_DONE_EACH 8.0f
+#define DRIFT_TURN_PROGRESS_MIN 150.0f
+#define DRIFT_STOP_ERR_MM 60.0f
+#define DRIFT_STOP_VEL_MMPS 120.0f
+#define DRIFT_STOP_HOLD_MS 150
+#define DRIFT_ROTATE_GYRO_DONE_DPS 25.0f
+#define DRIFT_ROTATE_HOLD_MS 120
+#define DRIFT_RETURN_STEER_MAX 60
 
 int   drift_approach_pwm  = 200;
 int   drift_return_pwm    = 200;
-float drift_brake_dist    = 914.0f;   // mm — 3 ft, KF threshold that triggers braking
-int   drift_brake_pwm     = 200;      // reverse PWM for hard deceleration
-unsigned long drift_brake_ms    = 250;
+float drift_trigger_dist  = 914.0f;
+float drift_stop_dist     = 700.0f;
+float drift_return_yaw_kp = 1.0f;
 unsigned long drift_return_ms   = 2000;
 unsigned long drift_timeout_ms  = 8000;
 
-int   drift_phase              = 0;   // 0=approach 1=brake 2=rotate 3=return 4=done
-float drift_yaw_start          = 0.0f;
-float drift_e_window[DRIFT_WIN_SIZE];  // rolling error buffer for rotation exit
+int   drift_phase              = 0;   // 0=approach 1=pid-stop 2=rotate 3=return 4=done
+float drift_approach_heading_ref = 0.0f;
+float drift_e_window[DRIFT_WIN_SIZE];
 int   drift_e_win_idx          = 0;
 unsigned long drift_start_ms        = 0;
-unsigned long drift_brake_start_ms  = 0;
+unsigned long drift_stop_hold_start_ms = 0;
+unsigned long drift_rotate_done_start_ms = 0;
 unsigned long drift_return_start_ms = 0;
 
 int16_t  drift_raw_hist[DRIFT_LOG_LEN];
 int16_t  drift_est_hist[DRIFT_LOG_LEN];
 int16_t  drift_yaw_hist[DRIFT_LOG_LEN];
 int16_t  drift_mot_hist[DRIFT_LOG_LEN];
+int16_t  drift_heading_err_hist[DRIFT_LOG_LEN];
+int16_t  drift_gyro_hist[DRIFT_LOG_LEN];
 uint8_t  drift_phase_hist[DRIFT_LOG_LEN];
 uint32_t drift_t_hist[DRIFT_LOG_LEN];
 int      drift_log_pos = 0;

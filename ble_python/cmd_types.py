@@ -51,7 +51,7 @@ class CMD(Enum):
     GET_KF_DEBUG_DATA = 42
 
     # Drift Stunt Commands (Lab 8)
-    DRIFT_START = 43      # params: approach_pwm|return_pwm|trigger_dist_mm|return_ms|timeout_ms
+    DRIFT_START = 43      # params: approach_pwm|return_pwm|trigger_dist_mm|stop_dist_mm|return_ms|timeout_ms|return_yaw_kp
     DRIFT_STOP = 44
     GET_DRIFT_DATA = 45
     SET_DRIFT_PARAMS = 46  # same params as DRIFT_START, sets without starting
