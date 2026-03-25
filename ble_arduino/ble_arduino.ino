@@ -62,6 +62,7 @@ bool collectingTOF = false;
 
 ICM_20948_I2C myICM;
 bool imuInitialized = false;
+bool imuDmpReady = false;
 
 float alpha_lpf = 0.2f;
 float alpha_comp = 0.05f;
@@ -76,9 +77,15 @@ float roll_comp = 0.0f;
 float imu_pitch_a_raw = 0.0f;
 float imu_roll_a_raw = 0.0f;
 float imu_last_gyr_z = 0.0f;
+float driftDmpHeadingDeg = 0.0f;
+float driftDmpHeadingZeroDeg = 0.0f;
 unsigned long imuSampleTimeMs = 0;
 unsigned long lastIMUTime = 0;
 unsigned long yawLastUpdateMs = 0;
+unsigned long driftDmpHeadingTsMs = 0;
+bool driftDmpHeadingValid = false;
+bool driftDmpZeroSet = false;
+int16_t driftDmpHeadingAccuracy = -1;
 
 unsigned long imuTimeStamps[MAX_IMU_SIZE];
 float imuPitchA[MAX_IMU_SIZE];
@@ -148,32 +155,27 @@ bool pid_safety_stop_latched = false;
 
 //////////// Drift Stunt Setup (Lab 8) ////////////
 #define DRIFT_LOG_LEN  800
-#define DRIFT_WIN_SIZE 12
-#define DRIFT_DONE_AVG  4.0f
-#define DRIFT_DONE_EACH 8.0f
+#define DRIFT_ROTATE_DONE_BAND_DEG 8.0f
+#define DRIFT_ROTATE_DONE_COUNT 3
 #define DRIFT_TURN_PROGRESS_MIN 150.0f
 #define DRIFT_STOP_ERR_MM 60.0f
 #define DRIFT_STOP_VEL_MMPS 120.0f
 #define DRIFT_STOP_HOLD_MS 150
-#define DRIFT_ROTATE_GYRO_DONE_DPS 25.0f
-#define DRIFT_ROTATE_HOLD_MS 120
 #define DRIFT_RETURN_STEER_MAX 60
 
 int   drift_approach_pwm  = 200;
 int   drift_return_pwm    = 200;
 float drift_trigger_dist  = 914.0f;
-float drift_stop_dist     = 700.0f;
+float drift_stop_dist     = 300.0f;
 float drift_return_yaw_kp = 1.0f;
 unsigned long drift_return_ms   = 2000;
 unsigned long drift_timeout_ms  = 8000;
 
 int   drift_phase              = 0;   // 0=approach 1=pid-stop 2=rotate 3=return 4=done
 float drift_approach_heading_ref = 0.0f;
-float drift_e_window[DRIFT_WIN_SIZE];
-int   drift_e_win_idx          = 0;
+int   drift_rotate_done_count  = 0;
 unsigned long drift_start_ms        = 0;
 unsigned long drift_stop_hold_start_ms = 0;
-unsigned long drift_rotate_done_start_ms = 0;
 unsigned long drift_return_start_ms = 0;
 
 int16_t  drift_raw_hist[DRIFT_LOG_LEN];
@@ -330,6 +332,7 @@ void setup() {
     if (myICM.status == ICM_20948_Stat_Ok) {
         imuInitialized = true;
         Serial.println("IMU initialized successfully");
+        imuDmpReady = init_imu_dmp();
     } else {
         Serial.print("IMU init failed: ");
         Serial.println(myICM.statusString());

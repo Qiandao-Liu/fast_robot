@@ -167,15 +167,13 @@ bool step_distance_pid(float dist_mm, unsigned long now_ms, float &error_mm, int
     return true;
 }
 
-bool step_orient_pid(float &error_deg, int &pwm, unsigned long &now_ms, bool log_history) {
-    if (!update_yaw_estimate()) return false;
-
-    now_ms = imuSampleTimeMs;
+bool step_orient_pid_with_heading(float heading_deg, float &error_deg, int &pwm,
+                                  unsigned long now_ms, bool log_history) {
     float dt = (float)(now_ms - orient_last_t) / 1000.0f;
     if (dt <= 0.0005f) return false;
     orient_last_t = now_ms;
 
-    error_deg = wrap_angle_deg(orient_target_deg - yaw_g);
+    error_deg = wrap_angle_deg(orient_target_deg - heading_deg);
 
     orient_I += error_deg * dt;
     if (orient_I > 100.0f) orient_I = 100.0f;
@@ -220,7 +218,7 @@ bool step_orient_pid(float &error_deg, int &pwm, unsigned long &now_ms, bool log
     }
 
     if (log_history && orient_pos < ORIENT_LENGTH) {
-        orient_yaw_hist[orient_pos] = (int16_t)lroundf(yaw_g * 10.0f);
+        orient_yaw_hist[orient_pos] = (int16_t)lroundf(heading_deg * 10.0f);
         orient_e_hist[orient_pos] = (int16_t)lroundf(error_deg * 10.0f);
         orient_motor_hist[orient_pos] = (int16_t)pwm;
         orient_t_hist[orient_pos] = now_ms;
@@ -230,12 +228,19 @@ bool step_orient_pid(float &error_deg, int &pwm, unsigned long &now_ms, bool log
     return true;
 }
 
-void append_drift_log(int raw_mm, float est_mm, int motor_cmd, int phase,
+bool step_orient_pid(float &error_deg, int &pwm, unsigned long &now_ms, bool log_history) {
+    if (!update_yaw_estimate()) return false;
+
+    now_ms = imuSampleTimeMs;
+    return step_orient_pid_with_heading(yaw_g, error_deg, pwm, now_ms, log_history);
+}
+
+void append_drift_log(int raw_mm, float est_mm, float heading_deg, int motor_cmd, int phase,
                       float heading_err_deg, float gyro_dps, unsigned long ts_ms) {
     if (drift_log_pos >= DRIFT_LOG_LEN) return;
     drift_raw_hist[drift_log_pos] = clamp_i16((float)raw_mm);
     drift_est_hist[drift_log_pos] = clamp_i16(est_mm);
-    drift_yaw_hist[drift_log_pos] = clamp_i16(yaw_g * 10.0f);
+    drift_yaw_hist[drift_log_pos] = clamp_i16(heading_deg * 10.0f);
     drift_mot_hist[drift_log_pos] = clamp_i16((float)motor_cmd);
     drift_heading_err_hist[drift_log_pos] = clamp_i16(heading_err_deg * 10.0f);
     drift_gyro_hist[drift_log_pos] = clamp_i16(gyro_dps * 10.0f);
@@ -646,6 +651,14 @@ bool drift_update_distance_estimate(unsigned long now_ms, float &est_dist, int &
 }
 
 void start_drift_run() {
+    if (!imuDmpReady) {
+        motorsStop();
+        runMode = RUN_IDLE;
+        tx_characteristic_string.writeValue("DRIFT_DMP_ERR");
+        Serial.println("Drift start rejected: DMP not ready");
+        return;
+    }
+
     stop_active_drive_run(STOP_MODE_SWITCH, true);
     collectingTOF = false;
     collectingIMU = false;
@@ -657,14 +670,17 @@ void start_drift_run() {
     kf_step_pwm_val = drift_approach_pwm;
     pid_setpoint = (int)lroundf(drift_stop_dist);
     reset_imu_filters();
+    driftDmpHeadingValid = false;
+    driftDmpHeadingTsMs = 0;
+    if (imuDmpReady) {
+        myICM.resetFIFO();
+    }
     unsigned long now_ms = millis();
     reset_distance_pid_state(now_ms);
     reset_orient_pid_state(now_ms, false);
     drift_stop_hold_start_ms = 0;
-    drift_rotate_done_start_ms = 0;
     drift_return_start_ms = 0;
-    memset(drift_e_window, 0, sizeof(drift_e_window));
-    drift_e_win_idx = 0;
+    drift_rotate_done_count = 0;
     drift_start_ms = now_ms;
     runMode = RUN_DRIFT;
 }
@@ -715,17 +731,20 @@ void handle_drift() {
 
     if (drift_phase == 0) {
         motorsForward(drift_approach_pwm);
-        update_yaw_estimate();
+        float heading_deg = 0.0f;
+        float gyro_dps = imu_last_gyr_z;
+        unsigned long heading_ts = now;
+        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
 
         float est_dist = 0.0f;
         int raw_mm = -1;
         if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
 
         update_kf_control_input(drift_approach_pwm);
-        append_drift_log(raw_mm, est_dist, drift_approach_pwm, 0, 0.0f, imu_last_gyr_z, now);
+        append_drift_log(raw_mm, est_dist, heading_deg, drift_approach_pwm, 0, 0.0f, gyro_dps, heading_ts);
 
         if (est_dist <= drift_trigger_dist) {
-            drift_approach_heading_ref = yaw_g;
+            drift_approach_heading_ref = heading_deg;
             orient_target_deg = wrap_angle_deg(drift_approach_heading_ref + 180.0f);
             reset_distance_pid_state(now);
             drift_stop_hold_start_ms = 0;
@@ -735,7 +754,10 @@ void handle_drift() {
     }
 
     if (drift_phase == 1) {
-        update_yaw_estimate();
+        float heading_deg = 0.0f;
+        float gyro_dps = imu_last_gyr_z;
+        unsigned long heading_ts = now;
+        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
 
         float est_dist = 0.0f;
         int raw_mm = -1;
@@ -748,9 +770,9 @@ void handle_drift() {
         apply_drive_pwm_signed(pwm);
         update_kf_control_input(pwm);
 
-        float heading_err = wrap_angle_deg(orient_target_deg - yaw_g);
+        float heading_err = wrap_angle_deg(orient_target_deg - heading_deg);
         float est_vel = kf_initialized ? kf_mu(1, 0) : 0.0f;
-        append_drift_log(raw_mm, est_dist, pwm, 1, heading_err, imu_last_gyr_z, now);
+        append_drift_log(raw_mm, est_dist, heading_deg, pwm, 1, heading_err, gyro_dps, heading_ts);
 
         bool stopped = fabsf(e) < DRIFT_STOP_ERR_MM && fabsf(est_vel) < DRIFT_STOP_VEL_MMPS;
         if (stopped) {
@@ -765,66 +787,56 @@ void handle_drift() {
             now - drift_stop_hold_start_ms >= DRIFT_STOP_HOLD_MS) {
             motorsStop();
             kf_last_u = 0.0f;
-            reset_orient_pid_state(imuSampleTimeMs > 0 ? imuSampleTimeMs : now, false);
-            drift_rotate_done_start_ms = 0;
-            memset(drift_e_window, 0, sizeof(drift_e_window));
-            drift_e_win_idx = 0;
+            reset_orient_pid_state(heading_ts, false);
+            drift_rotate_done_count = 0;
             drift_phase = 2;
         }
         return;
     }
 
     if (drift_phase == 2) {
+        float heading_deg = 0.0f;
+        float gyro_dps = imu_last_gyr_z;
+        unsigned long heading_ts = now;
+        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
+
         int pwm = 0;
         float e = 0.0f;
-        unsigned long imu_now = 0;
-        if (!step_orient_pid(e, pwm, imu_now, false)) return;
+        if (!step_orient_pid_with_heading(heading_deg, e, pwm, heading_ts, false)) return;
 
         append_drift_log(-1, kf_initialized ? kf_mu(0, 0) : -1.0f,
-                         pwm, 2, e, imu_last_gyr_z, imu_now);
+                         heading_deg, pwm, 2, e, gyro_dps, heading_ts);
 
-        drift_e_window[drift_e_win_idx % DRIFT_WIN_SIZE] = fabsf(e);
-        drift_e_win_idx++;
+        float turn_progress = fabsf(wrap_angle_deg(heading_deg - drift_approach_heading_ref));
+        bool rotate_done = turn_progress >= DRIFT_TURN_PROGRESS_MIN &&
+                           fabsf(e) <= DRIFT_ROTATE_DONE_BAND_DEG;
 
-        float turn_progress = 180.0f - fabsf(e);
-        if (drift_e_win_idx >= DRIFT_WIN_SIZE) {
-            float sum = 0.0f;
-            bool all_close = true;
-            for (int i = 0; i < DRIFT_WIN_SIZE; i++) {
-                float ae = drift_e_window[i];
-                sum += ae;
-                if (ae >= DRIFT_DONE_EACH) all_close = false;
-            }
+        if (rotate_done) {
+            drift_rotate_done_count++;
+        } else {
+            drift_rotate_done_count = 0;
+        }
 
-            bool rotate_stable = turn_progress >= DRIFT_TURN_PROGRESS_MIN &&
-                                 all_close &&
-                                 (sum / DRIFT_WIN_SIZE) < DRIFT_DONE_AVG &&
-                                 fabsf(imu_last_gyr_z) < DRIFT_ROTATE_GYRO_DONE_DPS;
-
-            if (rotate_stable) {
-                if (drift_rotate_done_start_ms == 0) {
-                    drift_rotate_done_start_ms = imu_now;
-                } else if (imu_now - drift_rotate_done_start_ms >= DRIFT_ROTATE_HOLD_MS) {
-                    motorsStop();
-                    drift_return_start_ms = now;
-                    drift_phase = 3;
-                }
-            } else {
-                drift_rotate_done_start_ms = 0;
-            }
+        if (drift_rotate_done_count >= DRIFT_ROTATE_DONE_COUNT) {
+            motorsStop();
+            drift_return_start_ms = heading_ts;
+            drift_phase = 3;
         }
         return;
     }
 
     if (drift_phase == 3) {
-        update_yaw_estimate();
+        float heading_deg = 0.0f;
+        float gyro_dps = imu_last_gyr_z;
+        unsigned long heading_ts = now;
+        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
 
-        float heading_err = wrap_angle_deg(orient_target_deg - yaw_g);
+        float heading_err = wrap_angle_deg(orient_target_deg - heading_deg);
         int steer_bias = (int)lroundf(drift_return_yaw_kp * heading_err);
         steer_bias = constrain(steer_bias, -DRIFT_RETURN_STEER_MAX, DRIFT_RETURN_STEER_MAX);
         motorsForwardSteered(drift_return_pwm, steer_bias);
 
-        append_drift_log(-1, -1.0f, steer_bias, 3, heading_err, imu_last_gyr_z, now);
+        append_drift_log(-1, -1.0f, heading_deg, steer_bias, 3, heading_err, gyro_dps, heading_ts);
 
         if (now - drift_return_start_ms >= drift_return_ms) {
             motorsStop();
