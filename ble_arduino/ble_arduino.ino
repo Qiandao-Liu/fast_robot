@@ -101,7 +101,7 @@ bool collectingIMU = false;
 #define PID_LENGTH 3000
 #define PID_SAFETY_MARGIN_MM 60
 #define DEADBAND_MIN 40
-#define PWM_MAX 200
+#define PWM_MAX 160
 
 enum RangeTraceKind { RANGE_REAL = 0, RANGE_EXTRAP = 1, RANGE_KF_PRED = 2 };
 
@@ -163,8 +163,8 @@ bool pid_safety_stop_latched = false;
 #define DRIFT_STOP_HOLD_MS 150
 #define DRIFT_RETURN_STEER_MAX 60
 
-int   drift_approach_pwm  = 200;
-int   drift_return_pwm    = 200;
+int   drift_approach_pwm  = 160;
+int   drift_return_pwm    = 160;
 float drift_trigger_dist  = 914.0f;
 float drift_stop_dist     = 300.0f;
 float drift_return_yaw_kp = 1.0f;
@@ -223,9 +223,9 @@ unsigned long kf_step_kick_until_ms = 0;
 
 //////////// Orientation PID Setup ////////////
 #define ORIENT_LENGTH 3000
-#define TURN_DEADBAND 150
-#define TURN_PWM_MAX 200
-#define TURN_KICK_PWM 200
+#define TURN_DEADBAND 120
+#define TURN_PWM_MAX 160
+#define TURN_KICK_PWM 170
 #define TURN_KICK_MS 70
 
 float orient_kp = 2.5f;
