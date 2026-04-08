@@ -22,7 +22,7 @@ using namespace BLA;
 #define R_BWD 15
 
 enum MotorMode { MOT_IDLE, MOT_FWD, MOT_BWD, MOT_LEFT, MOT_RIGHT, MOT_TURN_ANGLE };
-enum RunMode { RUN_IDLE, RUN_PID_LINEAR, RUN_PID_KF, RUN_ORIENT, RUN_KF_STEP, RUN_DRIFT };
+enum RunMode { RUN_IDLE, RUN_PID_LINEAR, RUN_PID_KF, RUN_ORIENT, RUN_KF_STEP, RUN_DRIFT, RUN_MAP };
 enum RunStopReason { STOP_CMD, STOP_TIMEOUT, STOP_SAFETY, STOP_MODE_SWITCH };
 
 float motorCalFactor = 1.0f;
@@ -185,6 +185,31 @@ uint32_t drift_t_hist[DRIFT_LOG_LEN];
 int      drift_log_pos = 0;
 //////////// Drift Stunt Setup (Lab 8) ////////////
 
+//////////// Mapping Setup (Lab 9) ////////////
+#define MAP_LOG_LEN          128
+#define MAP_DONE_BAND_DEG    8.0f
+#define MAP_DONE_GYRO_DPS    35.0f
+#define MAP_DONE_COUNT       2
+#define MAP_SAMPLE_WAIT_MS   250
+
+int map_step_deg = 10;
+int map_samples_goal = 36;
+unsigned long map_timeout_ms = 45000;
+
+int map_phase = 0;  // 0=rotate/settle 1=sample 2=done
+int map_sample_idx = 0;
+int map_done_count = 0;
+unsigned long map_start_ms = 0;
+unsigned long map_sample_wait_start_ms = 0;
+
+int16_t  map_target_hist[MAP_LOG_LEN];
+int16_t  map_heading_hist[MAP_LOG_LEN];
+int16_t  map_front_hist[MAP_LOG_LEN];
+int16_t  map_right_hist[MAP_LOG_LEN];
+uint32_t map_t_hist[MAP_LOG_LEN];
+int      map_log_pos = 0;
+//////////// Mapping Setup (Lab 9) ////////////
+
 //////////// Kalman Filter Setup ////////////
 float kf_d = 0.0003163f;
 float kf_m = 0.0002093f;
@@ -302,6 +327,10 @@ enum CommandTypes {
     DRIFT_STOP = 44,
     GET_DRIFT_DATA = 45,
     SET_DRIFT_PARAMS = 46,
+    MAP_START = 47,
+    MAP_STOP = 48,
+    GET_MAP_DATA = 49,
+    SET_MAP_PARAMS = 50,
 };
 
 void setup() {
@@ -396,6 +425,9 @@ void loop() {
                 break;
             case RUN_DRIFT:
                 handle_drift();
+                break;
+            case RUN_MAP:
+                handle_map();
                 break;
             case RUN_IDLE:
             default:

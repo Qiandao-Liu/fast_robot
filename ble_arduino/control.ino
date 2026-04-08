@@ -723,6 +723,159 @@ void stream_drift_history() {
     ble_write_reliable(tx_estring_value.c_str());
 }
 
+void append_map_log(float target_deg, float heading_deg, int front_mm, int right_mm,
+                    unsigned long ts_ms) {
+    if (map_log_pos >= MAP_LOG_LEN) return;
+    map_target_hist[map_log_pos] = clamp_i16(target_deg * 10.0f);
+    map_heading_hist[map_log_pos] = clamp_i16(heading_deg * 10.0f);
+    map_front_hist[map_log_pos] = clamp_i16((float)front_mm);
+    map_right_hist[map_log_pos] = clamp_i16((float)right_mm);
+    map_t_hist[map_log_pos] = ts_ms;
+    map_log_pos++;
+}
+
+void stream_map_history() {
+    Serial.print("Sending map rows=");
+    Serial.println(map_log_pos);
+
+    for (int i = 0; i < map_log_pos; i++) {
+        tx_estring_value.clear();
+        tx_estring_value.append("MAP|");
+        tx_estring_value.append((int)map_target_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)map_heading_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)map_front_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)map_right_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)map_t_hist[i]);
+        ble_write_reliable(tx_estring_value.c_str());
+    }
+
+    tx_estring_value.clear();
+    tx_estring_value.append("MAP_END|");
+    tx_estring_value.append(map_log_pos);
+    ble_write_reliable(tx_estring_value.c_str());
+}
+
+void start_map_run() {
+    if (!imuDmpReady) {
+        motorsStop();
+        runMode = RUN_IDLE;
+        tx_characteristic_string.writeValue("MAP_DMP_ERR");
+        Serial.println("Map start rejected: DMP not ready");
+        return;
+    }
+
+    stop_active_drive_run(STOP_MODE_SWITCH, true);
+    collectingTOF = false;
+    collectingIMU = false;
+    map_log_pos = 0;
+    map_phase = 0;
+    map_sample_idx = 0;
+    map_done_count = 0;
+    map_start_ms = millis();
+    map_sample_wait_start_ms = 0;
+    orient_target_deg = 0.0f;
+    reset_imu_filters();
+    driftDmpHeadingDeg = 0.0f;
+    driftDmpHeadingZeroDeg = 0.0f;
+    driftDmpHeadingValid = false;
+    driftDmpZeroSet = false;
+    driftDmpHeadingAccuracy = -1;
+    driftDmpHeadingTsMs = 0;
+    if (imuDmpReady) {
+        myICM.resetFIFO();
+    }
+    reset_orient_pid_state(map_start_ms, false);
+    runMode = RUN_MAP;
+}
+
+bool read_map_tof_sample(int &front_mm, int &right_mm, unsigned long &ts_ms) {
+    float front_dist = 0.0f;
+    if (!read_front_tof_sample(front_dist, ts_ms)) return false;
+
+    front_mm = (int)front_dist;
+    right_mm = -1;
+    if (tof2Ready && tofSensor2.checkForDataReady()) {
+        right_mm = (int)tofSensor2.getDistance();
+        tofSensor2.clearInterrupt();
+    }
+    return true;
+}
+
+void finish_map_sample(float heading_deg, int front_mm, int right_mm, unsigned long ts_ms) {
+    float target_deg = (float)(map_sample_idx * map_step_deg);
+    append_map_log(target_deg, heading_deg, front_mm, right_mm, ts_ms);
+
+    map_sample_idx++;
+    if (map_sample_idx >= map_samples_goal || map_log_pos >= MAP_LOG_LEN) {
+        motorsStop();
+        map_phase = 2;
+        runMode = RUN_IDLE;
+        tx_estring_value.clear();
+        tx_estring_value.append("MAP_DONE|");
+        tx_estring_value.append(map_log_pos);
+        ble_write_reliable(tx_estring_value.c_str());
+        return;
+    }
+
+    orient_target_deg = wrap_angle_deg((float)(map_sample_idx * map_step_deg));
+    reset_orient_pid_state(ts_ms, false);
+    map_done_count = 0;
+    map_phase = 0;
+}
+
+void handle_map() {
+    if (runMode != RUN_MAP) return;
+
+    unsigned long now = millis();
+    if (now - map_start_ms >= map_timeout_ms) {
+        motorsStop();
+        runMode = RUN_IDLE;
+        tx_characteristic_string.writeValue("MAP_TIMEOUT");
+        return;
+    }
+
+    float heading_deg = 0.0f;
+    float gyro_dps = imu_last_gyr_z;
+    unsigned long heading_ts = now;
+    if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
+
+    if (map_phase == 0) {
+        float e = 0.0f;
+        int pwm = 0;
+        if (!step_orient_pid_with_heading(heading_deg, e, pwm, heading_ts, false)) return;
+
+        bool settled = fabsf(e) <= MAP_DONE_BAND_DEG && fabsf(gyro_dps) <= MAP_DONE_GYRO_DPS;
+        map_done_count = settled ? (map_done_count + 1) : 0;
+
+        if (map_done_count >= MAP_DONE_COUNT) {
+            motorsStop();
+            map_sample_wait_start_ms = heading_ts;
+            map_phase = 1;
+        }
+        return;
+    }
+
+    if (map_phase == 1) {
+        motorsStop();
+
+        int front_mm = -1;
+        int right_mm = -1;
+        unsigned long tof_ts = heading_ts;
+        if (read_map_tof_sample(front_mm, right_mm, tof_ts)) {
+            finish_map_sample(heading_deg, front_mm, right_mm, tof_ts);
+            return;
+        }
+
+        if (now - map_sample_wait_start_ms >= MAP_SAMPLE_WAIT_MS) {
+            finish_map_sample(heading_deg, -1, -1, heading_ts);
+        }
+    }
+}
+
 void handle_drift() {
     if (runMode != RUN_DRIFT) return;
 
