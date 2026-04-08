@@ -650,6 +650,10 @@ bool drift_update_distance_estimate(unsigned long now_ms, float &est_dist, int &
     return true;
 }
 
+float drift_control_distance_mm(float est_dist, int raw_mm) {
+    return (raw_mm > 0) ? (float)raw_mm : est_dist;
+}
+
 void start_drift_run() {
     if (!imuDmpReady) {
         motorsStop();
@@ -670,7 +674,11 @@ void start_drift_run() {
     kf_step_pwm_val = drift_approach_pwm;
     pid_setpoint = (int)lroundf(drift_stop_dist);
     reset_imu_filters();
+    driftDmpHeadingDeg = 0.0f;
+    driftDmpHeadingZeroDeg = 0.0f;
     driftDmpHeadingValid = false;
+    driftDmpZeroSet = false;
+    driftDmpHeadingAccuracy = -1;
     driftDmpHeadingTsMs = 0;
     if (imuDmpReady) {
         myICM.resetFIFO();
@@ -731,19 +739,21 @@ void handle_drift() {
 
     if (drift_phase == 0) {
         motorsForward(drift_approach_pwm);
-        float heading_deg = 0.0f;
+        update_imu_state();
+        float heading_deg = driftDmpHeadingValid ? driftDmpHeadingDeg : 0.0f;
         float gyro_dps = imu_last_gyr_z;
-        unsigned long heading_ts = now;
-        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
+        unsigned long heading_ts = imuSampleTimeMs > 0 ? imuSampleTimeMs : now;
 
         float est_dist = 0.0f;
         int raw_mm = -1;
         if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
+        float control_dist = drift_control_distance_mm(est_dist, raw_mm);
 
         update_kf_control_input(drift_approach_pwm);
         append_drift_log(raw_mm, est_dist, heading_deg, drift_approach_pwm, 0, 0.0f, gyro_dps, heading_ts);
 
-        if (est_dist <= drift_trigger_dist) {
+        if (control_dist <= drift_trigger_dist) {
+            if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
             drift_approach_heading_ref = heading_deg;
             orient_target_deg = wrap_angle_deg(drift_approach_heading_ref + 180.0f);
             reset_distance_pid_state(now);
@@ -754,23 +764,26 @@ void handle_drift() {
     }
 
     if (drift_phase == 1) {
-        float heading_deg = 0.0f;
+        update_imu_state();
+        float heading_deg = driftDmpHeadingValid ? driftDmpHeadingDeg : drift_approach_heading_ref;
         float gyro_dps = imu_last_gyr_z;
-        unsigned long heading_ts = now;
-        if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
+        unsigned long heading_ts = imuSampleTimeMs > 0 ? imuSampleTimeMs : now;
 
         float est_dist = 0.0f;
         int raw_mm = -1;
         if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
+        float control_dist = drift_control_distance_mm(est_dist, raw_mm);
 
         float e = 0.0f;
         int pwm = 0;
-        if (!step_distance_pid(est_dist, now, e, pwm)) return;
+        if (!step_distance_pid(control_dist, now, e, pwm)) return;
 
         apply_drive_pwm_signed(pwm);
         update_kf_control_input(pwm);
 
-        float heading_err = wrap_angle_deg(orient_target_deg - heading_deg);
+        float heading_err = driftDmpHeadingValid
+            ? wrap_angle_deg(orient_target_deg - heading_deg)
+            : 0.0f;
         float est_vel = kf_initialized ? kf_mu(1, 0) : 0.0f;
         append_drift_log(raw_mm, est_dist, heading_deg, pwm, 1, heading_err, gyro_dps, heading_ts);
 
