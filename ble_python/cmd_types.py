@@ -57,7 +57,7 @@ class CMD(Enum):
     SET_DRIFT_PARAMS = 46  # same params as DRIFT_START, sets without starting
 
     # Mapping Commands (Lab 9)
-    MAP_START = 47        # params: step_deg|samples_goal|timeout_ms
+    MAP_START = 47        # params: step_deg|samples_goal|timeout_ms|turn_dir
     MAP_STOP = 48
     GET_MAP_DATA = 49
     SET_MAP_PARAMS = 50   # same params as MAP_START, sets without starting

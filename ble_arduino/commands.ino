@@ -616,16 +616,19 @@ void handle_command() {
 
         case MAP_START:
         {
-            int step_deg = 10;
-            int samples_goal = 36;
-            int timeout_ms = 45000;
+            int step_deg = 3;
+            int samples_goal = 120;
+            int timeout_ms = 120000;
+            int turn_dir = 1;
             robot_cmd.get_next_value(step_deg);
             robot_cmd.get_next_value(samples_goal);
             robot_cmd.get_next_value(timeout_ms);
+            robot_cmd.get_next_value(turn_dir);
 
             map_step_deg = constrain(step_deg, 1, 180);
             map_samples_goal = constrain(samples_goal, 1, MAP_LOG_LEN);
             map_timeout_ms = (unsigned long)max(1000, timeout_ms);
+            map_turn_dir = (turn_dir >= 0) ? 1 : -1;
             start_map_run();
             if (runMode != RUN_MAP) {
                 break;
@@ -633,8 +636,8 @@ void handle_command() {
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "MAP_START|step=%d|samples=%d|tout=%lu",
-                     map_step_deg, map_samples_goal, map_timeout_ms);
+                     "MAP_START|step=%d|samples=%d|tout=%lu|dir=%d",
+                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }
@@ -650,21 +653,24 @@ void handle_command() {
 
         case SET_MAP_PARAMS:
         {
-            int step_deg = 10;
-            int samples_goal = 36;
-            int timeout_ms = 45000;
+            int step_deg = 3;
+            int samples_goal = 120;
+            int timeout_ms = 120000;
+            int turn_dir = 1;
             robot_cmd.get_next_value(step_deg);
             robot_cmd.get_next_value(samples_goal);
             robot_cmd.get_next_value(timeout_ms);
+            robot_cmd.get_next_value(turn_dir);
 
             map_step_deg = constrain(step_deg, 1, 180);
             map_samples_goal = constrain(samples_goal, 1, MAP_LOG_LEN);
             map_timeout_ms = (unsigned long)max(1000, timeout_ms);
+            map_turn_dir = (turn_dir >= 0) ? 1 : -1;
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "MAP_PARAMS|step=%d|samples=%d|tout=%lu",
-                     map_step_deg, map_samples_goal, map_timeout_ms);
+                     "MAP_PARAMS|step=%d|samples=%d|tout=%lu|dir=%d",
+                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }

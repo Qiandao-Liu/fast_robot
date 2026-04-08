@@ -802,7 +802,7 @@ bool read_map_tof_sample(int &front_mm, int &right_mm, unsigned long &ts_ms) {
 }
 
 void finish_map_sample(float heading_deg, int front_mm, int right_mm, unsigned long ts_ms) {
-    float target_deg = (float)(map_sample_idx * map_step_deg);
+    float target_deg = (float)(map_turn_dir * map_sample_idx * map_step_deg);
     append_map_log(target_deg, heading_deg, front_mm, right_mm, ts_ms);
 
     map_sample_idx++;
@@ -817,7 +817,7 @@ void finish_map_sample(float heading_deg, int front_mm, int right_mm, unsigned l
         return;
     }
 
-    orient_target_deg = wrap_angle_deg((float)(map_sample_idx * map_step_deg));
+    orient_target_deg = wrap_angle_deg((float)(map_turn_dir * map_sample_idx * map_step_deg));
     reset_orient_pid_state(ts_ms, false);
     map_done_count = 0;
     map_phase = 0;
