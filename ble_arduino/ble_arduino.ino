@@ -187,14 +187,14 @@ int      drift_log_pos = 0;
 
 //////////// Mapping Setup (Lab 9) ////////////
 #define MAP_LOG_LEN          128
-#define MAP_DONE_BAND_DEG    8.0f
-#define MAP_DONE_GYRO_DPS    35.0f
-#define MAP_DONE_COUNT       2
-#define MAP_SAMPLE_WAIT_MS   250
+#define MAP_DONE_BAND_DEG    10.0f
+#define MAP_DONE_GYRO_DPS    40.0f
+#define MAP_DONE_COUNT       1
+#define MAP_SAMPLE_WAIT_MS   120
 
-int map_step_deg = 10;
-int map_samples_goal = 36;
-unsigned long map_timeout_ms = 45000;
+int map_step_deg = 5;
+int map_samples_goal = 72;
+unsigned long map_timeout_ms = 90000;
 
 int map_phase = 0;  // 0=rotate/settle 1=sample 2=done
 int map_sample_idx = 0;

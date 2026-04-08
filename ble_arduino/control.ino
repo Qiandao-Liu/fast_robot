@@ -793,15 +793,11 @@ void start_map_run() {
 }
 
 bool read_map_tof_sample(int &front_mm, int &right_mm, unsigned long &ts_ms) {
-    float front_dist = 0.0f;
-    if (!read_front_tof_sample(front_dist, ts_ms)) return false;
+    float right_dist = 0.0f;
+    if (!read_right_tof_sample(right_dist, ts_ms)) return false;
 
-    front_mm = (int)front_dist;
-    right_mm = -1;
-    if (tof2Ready && tofSensor2.checkForDataReady()) {
-        right_mm = (int)tofSensor2.getDistance();
-        tofSensor2.clearInterrupt();
-    }
+    front_mm = -1;
+    right_mm = (int)right_dist;
     return true;
 }
 

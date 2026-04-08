@@ -170,6 +170,14 @@ bool read_front_tof_sample(float &dist_mm, unsigned long &ts_ms) {
     return true;
 }
 
+bool read_right_tof_sample(float &dist_mm, unsigned long &ts_ms) {
+    if (!tof2Ready || !tofSensor2.checkForDataReady()) return false;
+    dist_mm = (float)tofSensor2.getDistance();
+    tofSensor2.clearInterrupt();
+    ts_ms = millis();
+    return true;
+}
+
 void record_tof_data() {
     float dist1 = 0.0f;
     unsigned long ts_ms = 0;
