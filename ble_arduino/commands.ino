@@ -16,6 +16,22 @@ bool ble_write_reliable(const char* str) {
     return false;
 }
 
+bool ble_write_reliable_fast(const char* str) {
+    constexpr int MAX_RETRIES = 100;
+    for (int i = 0; i < MAX_RETRIES; i++) {
+        if (tx_characteristic_string.writeValue(str)) {
+            BLE.poll();
+            delay(4);
+            return true;
+        }
+        BLE.poll();
+        delay(2);
+    }
+    Serial.print("BLE fast write failed: ");
+    Serial.println(str);
+    return false;
+}
+
 void stream_pid_history() {
     Serial.print("Sending TOF=");
     Serial.print(range_trace_pos);
@@ -617,18 +633,21 @@ void handle_command() {
         case MAP_START:
         {
             int step_deg = 3;
-            int samples_goal = 120;
+            int samples_goal = 127;
             int timeout_ms = 120000;
             int turn_dir = 1;
+            int sweep_deg = 380;
             robot_cmd.get_next_value(step_deg);
             robot_cmd.get_next_value(samples_goal);
             robot_cmd.get_next_value(timeout_ms);
             robot_cmd.get_next_value(turn_dir);
+            robot_cmd.get_next_value(sweep_deg);
 
             map_step_deg = constrain(step_deg, 1, 180);
             map_samples_goal = constrain(samples_goal, 1, MAP_LOG_LEN);
             map_timeout_ms = (unsigned long)max(1000, timeout_ms);
             map_turn_dir = (turn_dir >= 0) ? 1 : -1;
+            map_sweep_deg = constrain(sweep_deg, 1, 720);
             start_map_run();
             if (runMode != RUN_MAP) {
                 break;
@@ -636,8 +655,8 @@ void handle_command() {
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "MAP_START|step=%d|samples=%d|tout=%lu|dir=%d",
-                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir);
+                     "MAP_START|step=%d|samples=%d|tout=%lu|dir=%d|sweep=%d",
+                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir, map_sweep_deg);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }
@@ -654,26 +673,33 @@ void handle_command() {
         case SET_MAP_PARAMS:
         {
             int step_deg = 3;
-            int samples_goal = 120;
+            int samples_goal = 127;
             int timeout_ms = 120000;
             int turn_dir = 1;
+            int sweep_deg = 380;
             robot_cmd.get_next_value(step_deg);
             robot_cmd.get_next_value(samples_goal);
             robot_cmd.get_next_value(timeout_ms);
             robot_cmd.get_next_value(turn_dir);
+            robot_cmd.get_next_value(sweep_deg);
 
             map_step_deg = constrain(step_deg, 1, 180);
             map_samples_goal = constrain(samples_goal, 1, MAP_LOG_LEN);
             map_timeout_ms = (unsigned long)max(1000, timeout_ms);
             map_turn_dir = (turn_dir >= 0) ? 1 : -1;
+            map_sweep_deg = constrain(sweep_deg, 1, 720);
 
             char ack_buf[MAX_MSG_SIZE];
             snprintf(ack_buf, sizeof(ack_buf),
-                     "MAP_PARAMS|step=%d|samples=%d|tout=%lu|dir=%d",
-                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir);
+                     "MAP_PARAMS|step=%d|samples=%d|tout=%lu|dir=%d|sweep=%d",
+                     map_step_deg, map_samples_goal, map_timeout_ms, map_turn_dir, map_sweep_deg);
             tx_characteristic_string.writeValue(ack_buf);
             break;
         }
+
+        case GET_MAP_STATUS:
+            send_map_status();
+            break;
 
         default:
             if (cmd_type >= CMD_RETIRED_1 && cmd_type <= CMD_RETIRED_10) {

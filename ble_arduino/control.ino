@@ -750,13 +750,34 @@ void stream_map_history() {
         tx_estring_value.append((int)map_right_hist[i]);
         tx_estring_value.append("|");
         tx_estring_value.append((int)map_t_hist[i]);
-        ble_write_reliable(tx_estring_value.c_str());
+        ble_write_reliable_fast(tx_estring_value.c_str());
     }
 
     tx_estring_value.clear();
     tx_estring_value.append("MAP_END|");
     tx_estring_value.append(map_log_pos);
-    ble_write_reliable(tx_estring_value.c_str());
+    ble_write_reliable_fast(tx_estring_value.c_str());
+}
+
+void send_map_status() {
+    tx_estring_value.clear();
+    tx_estring_value.append("MAP_STATUS|");
+    tx_estring_value.append(runMode == RUN_MAP ? "RUNNING" : "IDLE");
+    tx_estring_value.append("|");
+    tx_estring_value.append(map_sample_idx);
+    tx_estring_value.append("|");
+    tx_estring_value.append(map_log_pos);
+    tx_estring_value.append("|");
+    tx_estring_value.append(map_phase);
+    tx_estring_value.append("|");
+    tx_estring_value.append((int)map_start_ms);
+    tx_estring_value.append("|");
+    tx_estring_value.append((int)millis());
+    tx_estring_value.append("|");
+    tx_estring_value.append(map_sweep_deg);
+    tx_estring_value.append("|");
+    tx_estring_value.append(map_step_deg);
+    ble_write_reliable_fast(tx_estring_value.c_str());
 }
 
 void start_map_run() {
@@ -806,7 +827,10 @@ void finish_map_sample(float heading_deg, int front_mm, int right_mm, unsigned l
     append_map_log(target_deg, heading_deg, front_mm, right_mm, ts_ms);
 
     map_sample_idx++;
-    if (map_sample_idx >= map_samples_goal || map_log_pos >= MAP_LOG_LEN) {
+    float next_target_mag = (float)(map_sample_idx * map_step_deg);
+    if (map_sample_idx >= map_samples_goal ||
+        next_target_mag > (float)map_sweep_deg ||
+        map_log_pos >= MAP_LOG_LEN) {
         motorsStop();
         map_phase = 2;
         runMode = RUN_IDLE;

@@ -193,9 +193,10 @@ int      drift_log_pos = 0;
 #define MAP_SAMPLE_WAIT_MS   120
 
 int map_step_deg = 3;
-int map_samples_goal = 120;
+int map_samples_goal = 127;
 unsigned long map_timeout_ms = 120000;
 int map_turn_dir = 1;
+int map_sweep_deg = 380;
 
 int map_phase = 0;  // 0=rotate/settle 1=sample 2=done
 int map_sample_idx = 0;
@@ -332,6 +333,7 @@ enum CommandTypes {
     MAP_STOP = 48,
     GET_MAP_DATA = 49,
     SET_MAP_PARAMS = 50,
+    GET_MAP_STATUS = 51,
 };
 
 void setup() {
