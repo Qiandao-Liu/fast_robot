@@ -158,9 +158,6 @@ bool pid_safety_stop_latched = false;
 #define DRIFT_ROTATE_DONE_BAND_DEG 8.0f
 #define DRIFT_ROTATE_DONE_COUNT 3
 #define DRIFT_TURN_PROGRESS_MIN 150.0f
-#define DRIFT_STOP_ERR_MM 60.0f
-#define DRIFT_STOP_VEL_MMPS 120.0f
-#define DRIFT_STOP_HOLD_MS 150
 #define DRIFT_RETURN_STEER_MAX 60
 
 int   drift_approach_pwm  = 160;
@@ -171,11 +168,10 @@ float drift_return_yaw_kp = 1.0f;
 unsigned long drift_return_ms   = 2000;
 unsigned long drift_timeout_ms  = 8000;
 
-int   drift_phase              = 0;   // 0=approach 1=pid-stop 2=rotate 3=return 4=done
+int   drift_phase              = 0;   // 0=approach 1=rotate 2=return 3=done
 float drift_approach_heading_ref = 0.0f;
 int   drift_rotate_done_count  = 0;
 unsigned long drift_start_ms        = 0;
-unsigned long drift_stop_hold_start_ms = 0;
 unsigned long drift_return_start_ms = 0;
 
 int16_t  drift_raw_hist[DRIFT_LOG_LEN];

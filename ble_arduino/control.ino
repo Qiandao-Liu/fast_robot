@@ -686,7 +686,6 @@ void start_drift_run() {
     unsigned long now_ms = millis();
     reset_distance_pid_state(now_ms);
     reset_orient_pid_state(now_ms, false);
-    drift_stop_hold_start_ms = 0;
     drift_return_start_ms = 0;
     drift_rotate_done_count = 0;
     drift_start_ms = now_ms;
@@ -756,58 +755,14 @@ void handle_drift() {
             if (!update_drift_heading_state(heading_deg, gyro_dps, heading_ts)) return;
             drift_approach_heading_ref = heading_deg;
             orient_target_deg = wrap_angle_deg(drift_approach_heading_ref + 180.0f);
-            reset_distance_pid_state(now);
-            drift_stop_hold_start_ms = 0;
+            kf_last_u = 0.0f;
+            reset_orient_pid_state(heading_ts, false);
             drift_phase = 1;
         }
         return;
     }
 
     if (drift_phase == 1) {
-        update_imu_state();
-        float heading_deg = driftDmpHeadingValid ? driftDmpHeadingDeg : drift_approach_heading_ref;
-        float gyro_dps = imu_last_gyr_z;
-        unsigned long heading_ts = imuSampleTimeMs > 0 ? imuSampleTimeMs : now;
-
-        float est_dist = 0.0f;
-        int raw_mm = -1;
-        if (!drift_update_distance_estimate(now, est_dist, raw_mm)) return;
-        float control_dist = drift_control_distance_mm(est_dist, raw_mm);
-
-        float e = 0.0f;
-        int pwm = 0;
-        if (!step_distance_pid(control_dist, now, e, pwm)) return;
-
-        apply_drive_pwm_signed(pwm);
-        update_kf_control_input(pwm);
-
-        float heading_err = driftDmpHeadingValid
-            ? wrap_angle_deg(orient_target_deg - heading_deg)
-            : 0.0f;
-        float est_vel = kf_initialized ? kf_mu(1, 0) : 0.0f;
-        append_drift_log(raw_mm, est_dist, heading_deg, pwm, 1, heading_err, gyro_dps, heading_ts);
-
-        bool stopped = fabsf(e) < DRIFT_STOP_ERR_MM && fabsf(est_vel) < DRIFT_STOP_VEL_MMPS;
-        if (stopped) {
-            if (drift_stop_hold_start_ms == 0) {
-                drift_stop_hold_start_ms = now;
-            }
-        } else {
-            drift_stop_hold_start_ms = 0;
-        }
-
-        if (drift_stop_hold_start_ms != 0 &&
-            now - drift_stop_hold_start_ms >= DRIFT_STOP_HOLD_MS) {
-            motorsStop();
-            kf_last_u = 0.0f;
-            reset_orient_pid_state(heading_ts, false);
-            drift_rotate_done_count = 0;
-            drift_phase = 2;
-        }
-        return;
-    }
-
-    if (drift_phase == 2) {
         float heading_deg = 0.0f;
         float gyro_dps = imu_last_gyr_z;
         unsigned long heading_ts = now;
@@ -818,7 +773,7 @@ void handle_drift() {
         if (!step_orient_pid_with_heading(heading_deg, e, pwm, heading_ts, false)) return;
 
         append_drift_log(-1, kf_initialized ? kf_mu(0, 0) : -1.0f,
-                         heading_deg, pwm, 2, e, gyro_dps, heading_ts);
+                         heading_deg, pwm, 1, e, gyro_dps, heading_ts);
 
         float turn_progress = fabsf(wrap_angle_deg(heading_deg - drift_approach_heading_ref));
         bool rotate_done = turn_progress >= DRIFT_TURN_PROGRESS_MIN &&
@@ -833,12 +788,12 @@ void handle_drift() {
         if (drift_rotate_done_count >= DRIFT_ROTATE_DONE_COUNT) {
             motorsStop();
             drift_return_start_ms = heading_ts;
-            drift_phase = 3;
+            drift_phase = 2;
         }
         return;
     }
 
-    if (drift_phase == 3) {
+    if (drift_phase == 2) {
         float heading_deg = 0.0f;
         float gyro_dps = imu_last_gyr_z;
         unsigned long heading_ts = now;
@@ -849,11 +804,11 @@ void handle_drift() {
         steer_bias = constrain(steer_bias, -DRIFT_RETURN_STEER_MAX, DRIFT_RETURN_STEER_MAX);
         motorsForwardSteered(drift_return_pwm, steer_bias);
 
-        append_drift_log(-1, -1.0f, heading_deg, steer_bias, 3, heading_err, gyro_dps, heading_ts);
+        append_drift_log(-1, -1.0f, heading_deg, steer_bias, 2, heading_err, gyro_dps, heading_ts);
 
         if (now - drift_return_start_ms >= drift_return_ms) {
             motorsStop();
-            drift_phase = 4;
+            drift_phase = 3;
             runMode = RUN_IDLE;
             tx_characteristic_string.writeValue("DRIFT_DONE");
         }
