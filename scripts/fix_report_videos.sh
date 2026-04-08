@@ -26,7 +26,9 @@ for input_dir in "$@"; do
     out="$dir/$stem.mp4"
     tmp="$dir/$stem.websafe.tmp.mp4"
 
-    if [ "${ext,,}" = "mp4" ] && { [ -f "$dir/$stem.mov" ] || [ -f "$dir/$stem.MOV" ]; }; then
+    ext_lc="$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')"
+
+    if [ "$ext_lc" = "mp4" ] && { [ -f "$dir/$stem.mov" ] || [ -f "$dir/$stem.MOV" ]; }; then
       echo "Skipping $src because a MOV source with the same stem exists."
       continue
     fi
