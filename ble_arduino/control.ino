@@ -814,12 +814,23 @@ void start_map_run() {
 }
 
 bool read_map_tof_sample(int &front_mm, int &right_mm, unsigned long &ts_ms) {
+    float front_dist = 0.0f;
     float right_dist = 0.0f;
-    if (!read_right_tof_sample(right_dist, ts_ms)) return false;
+    unsigned long front_ts = ts_ms;
+    unsigned long right_ts = ts_ms;
+    bool got_front = read_front_tof_sample(front_dist, front_ts);
+    bool got_right = read_right_tof_sample(right_dist, right_ts);
 
-    front_mm = -1;
-    right_mm = (int)right_dist;
-    return true;
+    front_mm = got_front ? (int)front_dist : -1;
+    right_mm = got_right ? (int)right_dist : -1;
+    if (got_front && got_right) {
+        ts_ms = max(front_ts, right_ts);
+    } else if (got_front) {
+        ts_ms = front_ts;
+    } else if (got_right) {
+        ts_ms = right_ts;
+    }
+    return got_front || got_right;
 }
 
 void finish_map_sample(float heading_deg, int front_mm, int right_mm, unsigned long ts_ms) {
