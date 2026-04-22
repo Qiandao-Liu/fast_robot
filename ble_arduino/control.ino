@@ -896,7 +896,7 @@ void handle_map() {
         int front_mm = -1;
         int right_mm = -1;
         unsigned long tof_ts = heading_ts;
-        if (read_map_tof_sample(front_mm, right_mm, tof_ts)) {
+        if (read_map_tof_sample(front_mm, right_mm, tof_ts) && front_mm > 0) {
             finish_map_sample(heading_deg, front_mm, right_mm, tof_ts);
             return;
         }

@@ -251,9 +251,9 @@ unsigned long kf_step_kick_until_ms = 0;
 #define TURN_KICK_PWM 170
 #define TURN_KICK_MS 70
 
-float orient_kp = 2.5f;
+float orient_kp = 2.0f;
 float orient_ki = 0.0f;
-float orient_kd = 0.05f;
+float orient_kd = 0.0f;
 float orient_target_deg = 90.0f;
 unsigned long orient_start_ms = 0;
 unsigned long orient_timeout_ms = 12000;
