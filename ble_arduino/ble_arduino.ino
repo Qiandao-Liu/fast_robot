@@ -22,7 +22,7 @@ using namespace BLA;
 #define R_BWD 15
 
 enum MotorMode { MOT_IDLE, MOT_FWD, MOT_BWD, MOT_LEFT, MOT_RIGHT, MOT_TURN_ANGLE };
-enum RunMode { RUN_IDLE, RUN_PID_LINEAR, RUN_PID_KF, RUN_ORIENT, RUN_KF_STEP, RUN_DRIFT, RUN_MAP };
+enum RunMode { RUN_IDLE, RUN_PID_LINEAR, RUN_PID_KF, RUN_ORIENT, RUN_KF_STEP, RUN_DRIFT, RUN_MAP, RUN_WALL_FOLLOW };
 enum RunStopReason { STOP_CMD, STOP_TIMEOUT, STOP_SAFETY, STOP_MODE_SWITCH };
 
 float motorCalFactor = 1.0f;
@@ -212,6 +212,36 @@ uint32_t map_t_hist[MAP_LOG_LEN];
 int      map_log_pos = 0;
 //////////// Mapping Setup (Lab 9) ////////////
 
+//////////// Wall-follow Setup (Lab 12) ////////////
+#define WALL_LOG_LEN 800
+
+int   wall_base_pwm = 60;
+float wall_target_right_mm = 304.0f;
+float wall_right_kp = 0.08f;
+float wall_front_stop_mm = 330.0f;
+float wall_front_safety_mm = 220.0f;
+unsigned long wall_timeout_ms = 7000;
+int   wall_max_steer = 18;
+int   wall_invalid_limit = 12;
+
+unsigned long wall_start_ms = 0;
+int   wall_invalid_count = 0;
+int   wall_last_front_mm = -1;
+int   wall_last_right_mm = -1;
+int   wall_last_steer = 0;
+int   wall_last_left_pwm = 0;
+int   wall_last_right_pwm = 0;
+int   wall_stop_reason_code = 0;
+
+int16_t  wall_front_hist[WALL_LOG_LEN];
+int16_t  wall_right_hist[WALL_LOG_LEN];
+int16_t  wall_steer_hist[WALL_LOG_LEN];
+int16_t  wall_left_pwm_hist[WALL_LOG_LEN];
+int16_t  wall_right_pwm_hist[WALL_LOG_LEN];
+uint32_t wall_t_hist[WALL_LOG_LEN];
+int      wall_log_pos = 0;
+//////////// Wall-follow Setup (Lab 12) ////////////
+
 //////////// Kalman Filter Setup ////////////
 float kf_d = 0.0003163f;
 float kf_m = 0.0002093f;
@@ -334,6 +364,10 @@ enum CommandTypes {
     GET_MAP_DATA = 49,
     SET_MAP_PARAMS = 50,
     GET_MAP_STATUS = 51,
+    WALL_FOLLOW_START = 52,
+    WALL_FOLLOW_STOP = 53,
+    GET_WALL_STATUS = 54,
+    GET_WALL_DATA = 55,
 };
 
 void setup() {
@@ -431,6 +465,9 @@ void loop() {
                 break;
             case RUN_MAP:
                 handle_map();
+                break;
+            case RUN_WALL_FOLLOW:
+                handle_wall_follow();
                 break;
             case RUN_IDLE:
             default:

@@ -701,6 +701,68 @@ void handle_command() {
             send_map_status();
             break;
 
+        case WALL_FOLLOW_START:
+        {
+            int base_pwm = wall_base_pwm;
+            float target_right = wall_target_right_mm;
+            float kp = wall_right_kp;
+            float front_stop = wall_front_stop_mm;
+            float front_safety = wall_front_safety_mm;
+            int timeout_ms = (int)wall_timeout_ms;
+            int max_steer = wall_max_steer;
+            int invalid_limit = wall_invalid_limit;
+
+            if (!robot_cmd.get_next_value(base_pwm)) break;
+            if (!robot_cmd.get_next_value(target_right)) break;
+            if (!robot_cmd.get_next_value(kp)) break;
+            if (!robot_cmd.get_next_value(front_stop)) break;
+            if (!robot_cmd.get_next_value(front_safety)) break;
+            if (!robot_cmd.get_next_value(timeout_ms)) break;
+            if (!robot_cmd.get_next_value(max_steer)) break;
+            if (!robot_cmd.get_next_value(invalid_limit)) break;
+
+            wall_base_pwm = constrain(base_pwm, 0, 255);
+            wall_target_right_mm = target_right;
+            wall_right_kp = kp;
+            wall_front_stop_mm = front_stop;
+            wall_front_safety_mm = front_safety;
+            wall_timeout_ms = (unsigned long)max(100, timeout_ms);
+            wall_max_steer = constrain(max_steer, 0, 120);
+            wall_invalid_limit = constrain(invalid_limit, 0, 100);
+            start_wall_follow_run();
+
+            tx_estring_value.clear();
+            tx_estring_value.append("WALL_START|");
+            tx_estring_value.append(wall_base_pwm);
+            tx_estring_value.append("|");
+            tx_estring_value.append((int)wall_target_right_mm);
+            tx_estring_value.append("|");
+            tx_estring_value.append(wall_right_kp);
+            tx_estring_value.append("|");
+            tx_estring_value.append((int)wall_front_stop_mm);
+            tx_estring_value.append("|");
+            tx_estring_value.append((int)wall_front_safety_mm);
+            tx_estring_value.append("|");
+            tx_estring_value.append((int)wall_timeout_ms);
+            tx_characteristic_string.writeValue(tx_estring_value.c_str());
+            break;
+        }
+
+        case WALL_FOLLOW_STOP:
+            if (runMode == RUN_WALL_FOLLOW) {
+                finish_wall_follow_run(5, true);
+            }
+            tx_characteristic_string.writeValue("WALL_STOP");
+            break;
+
+        case GET_WALL_STATUS:
+            send_wall_status();
+            break;
+
+        case GET_WALL_DATA:
+            stream_wall_history();
+            break;
+
         default:
             if (cmd_type >= CMD_RETIRED_1 && cmd_type <= CMD_RETIRED_10) {
                 Serial.print("Retired command ID: ");

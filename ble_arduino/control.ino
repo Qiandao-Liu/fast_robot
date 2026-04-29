@@ -759,6 +759,108 @@ void stream_map_history() {
     ble_write_reliable_fast(tx_estring_value.c_str());
 }
 
+const char *wall_stop_reason_label(int code) {
+    switch (code) {
+        case 1: return "FRONT_STOP";
+        case 2: return "SAFETY_STOP";
+        case 3: return "TIMEOUT";
+        case 4: return "RIGHT_INVALID";
+        case 5: return "STOP_CMD";
+        case 6: return "MODE_SWITCH";
+        default: return "NONE";
+    }
+}
+
+void append_wall_log(int front_mm, int right_mm, int steer_bias,
+                     int left_pwm, int right_pwm, unsigned long ts_ms) {
+    if (wall_log_pos >= WALL_LOG_LEN) return;
+    wall_front_hist[wall_log_pos] = clamp_i16((float)front_mm);
+    wall_right_hist[wall_log_pos] = clamp_i16((float)right_mm);
+    wall_steer_hist[wall_log_pos] = clamp_i16((float)steer_bias);
+    wall_left_pwm_hist[wall_log_pos] = clamp_i16((float)left_pwm);
+    wall_right_pwm_hist[wall_log_pos] = clamp_i16((float)right_pwm);
+    wall_t_hist[wall_log_pos] = ts_ms;
+    wall_log_pos++;
+}
+
+void stream_wall_history() {
+    for (int i = 0; i < wall_log_pos; i++) {
+        tx_estring_value.clear();
+        tx_estring_value.append("WFL|");
+        tx_estring_value.append((int)wall_front_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)wall_right_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)wall_steer_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)wall_left_pwm_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)wall_right_pwm_hist[i]);
+        tx_estring_value.append("|");
+        tx_estring_value.append((int)wall_t_hist[i]);
+        ble_write_reliable_fast(tx_estring_value.c_str());
+    }
+
+    tx_estring_value.clear();
+    tx_estring_value.append("WFL_END|");
+    tx_estring_value.append(wall_log_pos);
+    ble_write_reliable_fast(tx_estring_value.c_str());
+}
+
+void send_wall_status() {
+    tx_estring_value.clear();
+    tx_estring_value.append("WALL_STATUS|");
+    tx_estring_value.append(runMode == RUN_WALL_FOLLOW ? "RUNNING" : "IDLE");
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_last_front_mm);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_last_right_mm);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_last_steer);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_last_left_pwm);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_last_right_pwm);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_invalid_count);
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_stop_reason_label(wall_stop_reason_code));
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_log_pos);
+    ble_write_reliable_fast(tx_estring_value.c_str());
+}
+
+void finish_wall_follow_run(int reason_code, bool stop_motors) {
+    wall_stop_reason_code = reason_code;
+    stop_active_drive_run(reason_code == 5 ? STOP_CMD :
+                          reason_code == 6 ? STOP_MODE_SWITCH :
+                          reason_code == 3 ? STOP_TIMEOUT :
+                          reason_code == 2 ? STOP_SAFETY :
+                          STOP_CMD, stop_motors);
+    tx_estring_value.clear();
+    tx_estring_value.append("WALL_DONE|");
+    tx_estring_value.append(wall_stop_reason_label(reason_code));
+    tx_estring_value.append("|");
+    tx_estring_value.append(wall_log_pos);
+    ble_write_reliable_fast(tx_estring_value.c_str());
+}
+
+void start_wall_follow_run() {
+    stop_active_drive_run(STOP_MODE_SWITCH, true);
+    collectingTOF = false;
+    collectingIMU = false;
+    wall_start_ms = millis();
+    wall_invalid_count = 0;
+    wall_last_front_mm = -1;
+    wall_last_right_mm = -1;
+    wall_last_steer = 0;
+    wall_last_left_pwm = wall_base_pwm;
+    wall_last_right_pwm = wall_base_pwm;
+    wall_stop_reason_code = 0;
+    wall_log_pos = 0;
+    runMode = RUN_WALL_FOLLOW;
+}
+
 void send_map_status() {
     tx_estring_value.clear();
     tx_estring_value.append("MAP_STATUS|");
@@ -905,6 +1007,70 @@ void handle_map() {
             finish_map_sample(heading_deg, -1, -1, heading_ts);
         }
     }
+}
+
+void handle_wall_follow() {
+    if (runMode != RUN_WALL_FOLLOW) return;
+
+    unsigned long now = millis();
+    if (now - wall_start_ms >= wall_timeout_ms) {
+        finish_wall_follow_run(3, true);
+        return;
+    }
+
+    float front_dist = 0.0f;
+    float right_dist = 0.0f;
+    unsigned long front_ts = now;
+    unsigned long right_ts = now;
+    bool got_front = read_front_tof_sample(front_dist, front_ts);
+    bool got_right = read_right_tof_sample(right_dist, right_ts);
+    unsigned long sample_ts = got_front && got_right ? max(front_ts, right_ts)
+                           : got_front ? front_ts
+                           : got_right ? right_ts
+                           : now;
+
+    if (got_front) {
+        wall_last_front_mm = (int)front_dist;
+        if (front_dist <= wall_front_safety_mm) {
+            append_wall_log(wall_last_front_mm, wall_last_right_mm,
+                            wall_last_steer, wall_last_left_pwm,
+                            wall_last_right_pwm, sample_ts);
+            finish_wall_follow_run(2, true);
+            return;
+        }
+        if (front_dist <= wall_front_stop_mm) {
+            append_wall_log(wall_last_front_mm, wall_last_right_mm,
+                            wall_last_steer, wall_last_left_pwm,
+                            wall_last_right_pwm, sample_ts);
+            finish_wall_follow_run(1, true);
+            return;
+        }
+    }
+
+    int steer_bias = 0;
+    if (got_right) {
+        wall_last_right_mm = (int)right_dist;
+        wall_invalid_count = 0;
+        float error_right = wall_target_right_mm - right_dist;
+        steer_bias = (int)lroundf(wall_right_kp * error_right);
+        steer_bias = constrain(steer_bias, -wall_max_steer, wall_max_steer);
+    } else {
+        wall_invalid_count++;
+        if (wall_invalid_count > wall_invalid_limit) {
+            append_wall_log(wall_last_front_mm, wall_last_right_mm,
+                            wall_last_steer, wall_last_left_pwm,
+                            wall_last_right_pwm, sample_ts);
+            finish_wall_follow_run(4, true);
+            return;
+        }
+    }
+
+    wall_last_steer = steer_bias;
+    wall_last_left_pwm = constrain(wall_base_pwm + steer_bias, 0, 255);
+    wall_last_right_pwm = constrain((int)((wall_base_pwm - steer_bias) * motorCalFactor), 0, 255);
+    motorsForwardSteered(wall_base_pwm, steer_bias);
+    append_wall_log(wall_last_front_mm, wall_last_right_mm, wall_last_steer,
+                    wall_last_left_pwm, wall_last_right_pwm, sample_ts);
 }
 
 void handle_drift() {

@@ -62,3 +62,9 @@ class CMD(Enum):
     GET_MAP_DATA = 49
     SET_MAP_PARAMS = 50   # same params as MAP_START, sets without starting
     GET_MAP_STATUS = 51
+
+    # Wall-follow Navigation Commands (Lab 12)
+    WALL_FOLLOW_START = 52  # params: base_pwm|target_right_mm|kp|front_stop_mm|front_safety_mm|timeout_ms|max_steer|invalid_limit
+    WALL_FOLLOW_STOP = 53
+    GET_WALL_STATUS = 54
+    GET_WALL_DATA = 55
